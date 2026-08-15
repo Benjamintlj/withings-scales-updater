@@ -10,7 +10,7 @@ func main() {
 	http.HandleFunc("/", testingHandler)
 
 	log.Println("starting ...")
-	log.Fatal(http.ListenAndServe(":443", nil))
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
 
 func testingHandler(w http.ResponseWriter, r *http.Request) {
