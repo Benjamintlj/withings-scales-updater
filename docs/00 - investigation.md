@@ -64,3 +64,8 @@ tailscale funnel --https=443 off
 ### CI
 
 - [ ] Jenkins pipeline to deploy services
+
+### Easy side tasks
+
+- [ ] Port comes from flags
+- [ ] Logging

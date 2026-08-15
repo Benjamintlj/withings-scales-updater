@@ -1,22 +1,15 @@
 package main
 
 import (
-	"fmt"
 	"log"
 	"net/http"
+
+	"github.com/Benjamintlj/withings-scales-updater/authorization"
 )
 
 func main() {
-	http.HandleFunc("/", testingHandler)
+	http.HandleFunc("/", authorization.Handler)
 
 	log.Println("starting ...")
 	log.Fatal(http.ListenAndServe(":8080", nil))
-}
-
-func testingHandler(w http.ResponseWriter, r *http.Request) {
-	log.Println("endpoint hit")
-
-	fmt.Fprintln(w, "<h1>hello rhiannon</h1>")
-
-	w.WriteHeader(http.StatusOK)
 }
