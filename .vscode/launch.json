@@ -10,7 +10,12 @@
             "request": "launch",
             "mode": "auto",
             "program": "${workspaceFolder}/cmd/service",
-            "cwd": "${workspaceFolder}"
+            "cwd": "${workspaceFolder}",
+            "args": [
+                "-port=8080",
+                "-service-url=https://slaptop-pro.tailbe1abe.ts.net"
+            ],
+            "envFile": "${workspaceFolder}/.env"
         }
     ]
 }
