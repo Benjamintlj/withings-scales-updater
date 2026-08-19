@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -29,10 +30,11 @@ func main() {
 	}
 
 	auth := authorization{
-		serviceUrl:          *serviceUrl,
-		clientId:            os.Getenv("CLIENT_ID"),
-		customerSecret:      os.Getenv("CUSTOMER_SECRET"),
-		client:              client,
+		serviceUrl:      *serviceUrl,
+		clientId:        os.Getenv("CLIENT_ID"),
+		customerSecret:  os.Getenv("CUSTOMER_SECRET"),
+		client:          client,
+		requestTokenUrl: "https://wbsapi.withings.net/v2/oauth2",
 	}
 
 	http.HandleFunc("/login", auth.LoginHandler)
@@ -42,10 +44,13 @@ func main() {
 }
 
 type authorization struct {
-	serviceUrl          string
-	clientId            string
-	customerSecret      string
-	client              *http.Client
+	serviceUrl      string
+	clientId        string
+	customerSecret  string
+	client          *http.Client
+	accessToken     string
+	refreshToken    string
+	requestTokenUrl string
 }
 
 func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -60,6 +65,15 @@ func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Location", withlingsRedirectUrl)
 
 	w.WriteHeader(http.StatusFound)
+}
+
+type requestTokenPayloadBody struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
+type requestTokenPayload struct {
+	Body requestTokenPayloadBody `json:"body"`
 }
 
 func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
@@ -82,7 +96,7 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	form.Set("code", code)
 	form.Set("redirect_uri", fmt.Sprint(a.serviceUrl, "/get_token"))
 
-	request, err := http.NewRequest(http.MethodPost, "https://wbsapi.withings.net/v2/oauth2", strings.NewReader(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, a.requestTokenUrl, strings.NewReader(form.Encode()))
 	if err != nil {
 		slog.Error("failed to create body", "error", err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
@@ -91,22 +105,43 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	response, err := a.client.Do(request)
-	if err != nil {
+	var urlErr *url.Error
+	if errors.Is(err, urlErr) && urlErr.Timeout() {
+		slog.Error("request timed out", "error", err.Error())
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	} else if err != nil {
 		slog.Error("request failed", "error", err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
 
-	var responsePayload struct {
-		Body struct {
-			AccessToken  string `json:"access_token"`
-			RefreshToken string `json:"refresh_token"`
-		} `json:"body"`
+	if response.StatusCode >= 300 {
+		slog.Error("recieved non-200 status code", "status code", response.StatusCode)
+		w.WriteHeader(http.StatusBadGateway)
+		return
 	}
+
+	var responsePayload requestTokenPayload
 	err = json.NewDecoder(response.Body).Decode(&responsePayload)
 	if err != nil {
 		slog.Error("failed to decode response", "error", err.Error())
-		w.WriteHeader(http.StatusInternalServerError)
+		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
+
+	if responsePayload.Body.AccessToken == "" {
+		slog.Error("returned access token was empty")
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+
+	if responsePayload.Body.RefreshToken == "" {
+		slog.Error("returned access token was empty")
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+
+	a.accessToken = responsePayload.Body.AccessToken
+	a.refreshToken = responsePayload.Body.RefreshToken
 }
