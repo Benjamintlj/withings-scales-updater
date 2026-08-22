@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -35,10 +36,12 @@ func main() {
 		customerSecret:  os.Getenv("CUSTOMER_SECRET"),
 		client:          client,
 		requestTokenUrl: "https://wbsapi.withings.net/v2/oauth2",
+		accessToken:     "b078fa6a5dbc5bd3758bb1fb731453b1009373d8", // todo - remove, only used for testing
 	}
 
 	http.HandleFunc("/login", auth.LoginHandler)
 	http.HandleFunc("/get_token", auth.TokenHandler)
+	http.HandleFunc("GET /weight", auth.GetWeight)
 
 	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", *port), nil))
 }
@@ -144,4 +147,96 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 
 	a.accessToken = responsePayload.Body.AccessToken
 	a.refreshToken = responsePayload.Body.RefreshToken
+}
+
+type getWeightResponse struct {
+	Status int                   `json:"status"`
+	Body   getWeightResponseBody `json:"body"`
+}
+
+type getWeightResponseBody struct {
+	MeasureGroups []measureGroup `json:"measuregrps"`
+}
+
+type measureGroup struct {
+	Measures []weightMeasure `json:"measures"`
+}
+
+type weightMeasure struct {
+	Value float64 `json:"value"`
+	Unit  int     `json:"unit"`
+	Type  int     `json:"type"`
+}
+
+type metrics struct {
+	Weight float64 `json:"weight"`
+}
+
+type weightResult struct {
+	Measurements []metrics `json:"measurements"`
+}
+
+func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
+	form := url.Values{}
+	form.Set("action", "getmeas")
+	form.Set("meastype", "1")
+	form.Set("category", "1")
+	form.Set("lastupdate", fmt.Sprint(time.Now().Add(-time.Hour*26).Unix()))
+	form.Set("offset", "1")
+
+	request, err := http.NewRequest(http.MethodPost, "https://wbsapi.withings.net/measure", strings.NewReader(form.Encode()))
+	if err != nil {
+		slog.Error("failed to create body", "error", err.Error())
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	request.Header.Set("Authorization", a.getBearerToken())
+
+	response, err := a.client.Do(request)
+	if err != nil {
+		slog.Error("request failed", "error", err.Error())
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+
+	var responseBody getWeightResponse
+	err = json.NewDecoder(response.Body).Decode(&responseBody)
+	if err != nil {
+		slog.Error("failed to decode response", "error", err.Error())
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
+
+	if responseBody.Status != 0 {
+		slog.Warn("received a non-0 status", "status", responseBody.Status)
+	}
+
+	if len(responseBody.Body.MeasureGroups) == 0 {
+		slog.Warn("no measure groups")
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	resultBody := weightResult{
+		Measurements: []metrics{},
+	}
+
+	for _, measureGroup := range responseBody.Body.MeasureGroups {
+		metric := metrics{}
+
+		for _, measure := range measureGroup.Measures {
+			if measure.Type == 1 {
+				metric.Weight = measure.Value * math.Pow10(measure.Unit)
+			}
+		}
+		resultBody.Measurements = append(resultBody.Measurements, metric)
+	}
+
+	json.NewEncoder(w).Encode(resultBody)
+	w.WriteHeader(http.StatusOK)
+}
+
+func (a *authorization) getBearerToken() string {
+	return fmt.Sprint("Bearer ", a.accessToken)
 }
