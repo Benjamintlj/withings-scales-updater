@@ -32,10 +32,20 @@ func main() {
 		},
 	}
 
+	clientId := os.Getenv("CLIENT_ID")
+	if clientId == "" {
+		log.Fatal("ClientId is not populated")
+	}
+
+	customerSecret := os.Getenv("CUSTOMER_SECRET")
+	if customerSecret == "" {
+		log.Fatal("ClientId is not populated")
+	}
+
 	auth := authorization{
 		serviceUrl:      *serviceUrl,
-		clientId:        os.Getenv("CLIENT_ID"),
-		customerSecret:  os.Getenv("CUSTOMER_SECRET"),
+		clientId:        clientId,
+		customerSecret:  customerSecret,
 		client:          client,
 		requestTokenUrl: "https://wbsapi.withings.net/v2/oauth2",
 		measureUrl:      "https://wbsapi.withings.net/measure",
