@@ -37,6 +37,7 @@ func main() {
 		customerSecret:  os.Getenv("CUSTOMER_SECRET"),
 		client:          client,
 		requestTokenUrl: "https://wbsapi.withings.net/v2/oauth2",
+		measureUrl:      "https://wbsapi.withings.net/measure",
 		tokenMu:         sync.RWMutex{},
 	}
 
@@ -73,6 +74,7 @@ type authorization struct {
 	accessToken     string
 	refreshToken    string
 	requestTokenUrl string
+	measureUrl      string
 	tokenExpiryDate time.Time
 }
 
@@ -90,14 +92,14 @@ func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusFound)
 }
 
-type requestTokenPayloadBody struct {
+type responseTokenPayloadBody struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
 	ExpiresIn    int    `json:"expires_in"`
 }
 
-type requestTokenPayload struct {
-	Body requestTokenPayloadBody `json:"body"`
+type responseTokenPayload struct {
+	Body responseTokenPayloadBody `json:"body"`
 }
 
 func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +111,6 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-
 	// state := r.URL.Query().Get("state") // todo we will ignore this for now
 
 	form := url.Values{}
@@ -146,7 +147,7 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var responsePayload requestTokenPayload
+	var responsePayload responseTokenPayload
 	err = json.NewDecoder(response.Body).Decode(&responsePayload)
 	if err != nil {
 		slog.Error("failed to decode response", "error", err.Error())
@@ -201,7 +202,12 @@ type weightResult struct {
 }
 
 func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
-	a.refreshTokens()
+	err := a.RefreshTokens()
+	if err != nil {
+		slog.Error("failed to refresh tokens", "error", err.Error())
+		w.WriteHeader(http.StatusBadGateway)
+		return
+	}
 
 	form := url.Values{}
 	form.Set("action", "getmeas")
@@ -210,7 +216,7 @@ func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
 	form.Set("lastupdate", fmt.Sprint(time.Now().Add(-time.Hour*26).Unix()))
 	form.Set("offset", "1")
 
-	request, err := http.NewRequest(http.MethodPost, "https://wbsapi.withings.net/measure", strings.NewReader(form.Encode()))
+	request, err := http.NewRequest(http.MethodPost, a.measureUrl, strings.NewReader(form.Encode()))
 	if err != nil {
 		slog.Error("failed to create body", "error", err.Error())
 		w.WriteHeader(http.StatusInternalServerError)
@@ -264,7 +270,7 @@ func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (a *authorization) refreshTokens() error {
+func (a *authorization) RefreshTokens() error {
 	a.tokenMu.Lock()
 	defer a.tokenMu.Unlock()
 
@@ -292,7 +298,7 @@ func (a *authorization) refreshTokens() error {
 		return ErrRequestFailed
 	}
 
-	var responsePayload requestTokenPayload
+	var responsePayload responseTokenPayload
 	err = json.NewDecoder(response.Body).Decode(&responsePayload)
 	if err != nil {
 		slog.Error("failed to decode response payload", "error", err.Error())
