@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -36,24 +37,43 @@ func main() {
 		customerSecret:  os.Getenv("CUSTOMER_SECRET"),
 		client:          client,
 		requestTokenUrl: "https://wbsapi.withings.net/v2/oauth2",
-		accessToken:     "b078fa6a5dbc5bd3758bb1fb731453b1009373d8", // todo - remove, only used for testing
+		tokenMu:         sync.RWMutex{},
 	}
 
 	http.HandleFunc("/login", auth.LoginHandler)
 	http.HandleFunc("/get_token", auth.TokenHandler)
 	http.HandleFunc("GET /weight", auth.GetWeight)
 
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%v", *port), nil))
+	serverFailureChan := make(chan error, 1)
+	go func() {
+		serverFailureChan <- http.ListenAndServe(fmt.Sprintf(":%v", *port), nil)
+	}()
+
+	log.Fatal(<-serverFailureChan)
 }
+
+type ErrScalesUpdater string
+
+func (e ErrScalesUpdater) Error() string {
+	return string(e)
+}
+
+const (
+	ErrFailedToCreateRequest = ErrScalesUpdater("Failed to create request")
+	ErrRequestFailed         = ErrScalesUpdater("Request failed")
+	ErrDecodePayload         = ErrScalesUpdater("Failed to decode payload")
+)
 
 type authorization struct {
 	serviceUrl      string
 	clientId        string
 	customerSecret  string
 	client          *http.Client
+	tokenMu         sync.RWMutex
 	accessToken     string
 	refreshToken    string
 	requestTokenUrl string
+	tokenExpiryDate time.Time
 }
 
 func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
@@ -73,6 +93,7 @@ func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
 type requestTokenPayloadBody struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
+	ExpiresIn    int    `json:"expires_in"`
 }
 
 type requestTokenPayload struct {
@@ -145,8 +166,11 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	a.tokenMu.Lock()
 	a.accessToken = responsePayload.Body.AccessToken
 	a.refreshToken = responsePayload.Body.RefreshToken
+	a.tokenExpiryDate = time.Now().UTC().Add(time.Second * time.Duration(responsePayload.Body.ExpiresIn))
+	a.tokenMu.Unlock()
 }
 
 type getWeightResponse struct {
@@ -177,6 +201,8 @@ type weightResult struct {
 }
 
 func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
+	a.refreshTokens()
+
 	form := url.Values{}
 	form.Set("action", "getmeas")
 	form.Set("meastype", "1")
@@ -233,10 +259,54 @@ func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
 		resultBody.Measurements = append(resultBody.Measurements, metric)
 	}
 
+	slog.Info("got measurements", "length", len(resultBody.Measurements))
 	json.NewEncoder(w).Encode(resultBody)
 	w.WriteHeader(http.StatusOK)
 }
 
+func (a *authorization) refreshTokens() error {
+	a.tokenMu.Lock()
+	defer a.tokenMu.Unlock()
+
+	if a.tokenExpiryDate.Add(time.Minute).After(time.Now().UTC()) {
+		slog.Info("No need to refresh tokens", "expiryDate", a.tokenExpiryDate)
+		return nil
+	}
+
+	form := url.Values{}
+	form.Add("action", "requesttoken")
+	form.Add("client_id", a.clientId)
+	form.Add("client_secret", a.customerSecret)
+	form.Add("grant_type", "refresh_token")
+	form.Add("refresh_token", a.refreshToken)
+
+	request, err := http.NewRequest(http.MethodPost, a.requestTokenUrl, strings.NewReader(form.Encode()))
+	if err != nil {
+		slog.Error("failed to create request", "error", err.Error())
+		return ErrFailedToCreateRequest
+	}
+
+	response, err := a.client.Do(request)
+	if err != nil {
+		slog.Error("request failed", "error", err)
+		return ErrRequestFailed
+	}
+
+	var responsePayload requestTokenPayload
+	err = json.NewDecoder(response.Body).Decode(&responsePayload)
+	if err != nil {
+		slog.Error("failed to decode response payload", "error", err.Error())
+		return ErrDecodePayload
+	}
+
+	a.accessToken = responsePayload.Body.AccessToken
+	a.refreshToken = responsePayload.Body.RefreshToken
+	a.tokenExpiryDate = time.Now().UTC().Add(time.Second * time.Duration(responsePayload.Body.ExpiresIn))
+	return nil
+}
+
 func (a *authorization) getBearerToken() string {
+	a.tokenMu.RLock()
+	defer a.tokenMu.RUnlock()
 	return fmt.Sprint("Bearer ", a.accessToken)
 }
