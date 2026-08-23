@@ -209,7 +209,7 @@ func TestGetWeight(t *testing.T) {
 		)
 		defer server.Close()
 		au := &authorization{
-			tokenExpiryDate: time.Now().UTC(),
+			tokenExpiryDate: time.Now().UTC().Add(time.Hour),
 			accessToken:     "token",
 			refreshToken:    "askdf",
 			tokenMu:         sync.RWMutex{},
@@ -226,7 +226,7 @@ func TestGetWeight(t *testing.T) {
 func TestRefreshTokens(t *testing.T) {
 	type serverResponseTest struct {
 		code    int
-		payload responseTokenPayloadBody
+		payload responseTokenPayload
 	}
 
 	type authTokensTest struct {
@@ -257,10 +257,13 @@ func TestRefreshTokens(t *testing.T) {
 			},
 			serverResponse: serverResponseTest{
 				code: http.StatusOK,
-				payload: responseTokenPayloadBody{
-					AccessToken:  "server access token",
-					RefreshToken: "server refresh token",
-					ExpiresIn:    10800,
+				payload: responseTokenPayload{
+					Status: 0,
+					Body: responseTokenPayloadBody{
+						AccessToken:  "server access token",
+						RefreshToken: "server refresh token",
+						ExpiresIn:    10800,
+					},
 				},
 			},
 			expect: expectTest{
@@ -279,10 +282,13 @@ func TestRefreshTokens(t *testing.T) {
 			},
 			serverResponse: serverResponseTest{
 				code: http.StatusOK,
-				payload: responseTokenPayloadBody{
-					AccessToken:  "server access token",
-					RefreshToken: "server refresh token",
-					ExpiresIn:    10800,
+				payload: responseTokenPayload{
+					Status: 0,
+					Body: responseTokenPayloadBody{
+						AccessToken:  "server access token",
+						RefreshToken: "server refresh token",
+						ExpiresIn:    10800,
+					},
 				},
 			},
 			expect: expectTest{
@@ -293,7 +299,7 @@ func TestRefreshTokens(t *testing.T) {
 			},
 		},
 		{
-			name: "Bad server response",
+			name: "Bad server response code",
 			authTokens: authTokensTest{
 				accessToken:     "already got access token",
 				refreshToken:    "already got access token",
@@ -301,10 +307,38 @@ func TestRefreshTokens(t *testing.T) {
 			},
 			serverResponse: serverResponseTest{
 				code: http.StatusInternalServerError,
-				payload: responseTokenPayloadBody{
-					AccessToken:  "server access token",
-					RefreshToken: "server refresh token",
-					ExpiresIn:    10800,
+				payload: responseTokenPayload{
+					Status: 0,
+					Body: responseTokenPayloadBody{
+						AccessToken:  "server access token",
+						RefreshToken: "server refresh token",
+						ExpiresIn:    10800,
+					},
+				},
+			},
+			expect: expectTest{
+				err:            ErrRequestFailed,
+				accessToken:    "already got access token",
+				refreshToken:   "already got access token",
+				newTokenExpiry: false,
+			},
+		},
+		{
+			name: "Bad server response body",
+			authTokens: authTokensTest{
+				accessToken:     "already got access token",
+				refreshToken:    "already got access token",
+				tokenExpiryDate: time.Now().UTC().Add(-time.Hour),
+			},
+			serverResponse: serverResponseTest{
+				code: http.StatusOK,
+				payload: responseTokenPayload{
+					Status: 1,
+					Body: responseTokenPayloadBody{
+						AccessToken:  "server access token",
+						RefreshToken: "server refresh token",
+						ExpiresIn:    10800,
+					},
 				},
 			},
 			expect: expectTest{
@@ -322,13 +356,7 @@ func TestRefreshTokens(t *testing.T) {
 				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					w.WriteHeader(test.serverResponse.code)
 
-					err := json.NewEncoder(w).Encode(responseTokenPayload{
-						Body: responseTokenPayloadBody{
-							AccessToken:  test.serverResponse.payload.AccessToken,
-							RefreshToken: test.serverResponse.payload.RefreshToken,
-							ExpiresIn:    test.serverResponse.payload.ExpiresIn,
-						},
-					})
+					err := json.NewEncoder(w).Encode(test.serverResponse.payload)
 
 					if err != nil {
 						t.Fatalf("failed to encode mock response %q", err.Error())
@@ -338,7 +366,7 @@ func TestRefreshTokens(t *testing.T) {
 			au := &authorization{
 				tokenExpiryDate: test.authTokens.tokenExpiryDate,
 				accessToken:     test.authTokens.accessToken,
-				refreshToken:    test.expect.refreshToken,
+				refreshToken:    test.authTokens.refreshToken,
 				tokenMu:         sync.RWMutex{},
 				client:          &http.Client{Timeout: 1 * time.Second},
 				requestTokenUrl: server.URL,

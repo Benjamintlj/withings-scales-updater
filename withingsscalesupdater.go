@@ -100,7 +100,8 @@ type responseTokenPayloadBody struct {
 }
 
 type responseTokenPayload struct {
-	Body responseTokenPayloadBody `json:"body"`
+	Status int                      `json:"status"`
+	Body   responseTokenPayloadBody `json:"body"`
 }
 
 func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +142,7 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
+	defer response.Body.Close()
 
 	if response.StatusCode >= 300 {
 		slog.Error("recieved non-200 status code", "status code", response.StatusCode)
@@ -232,6 +234,7 @@ func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		return
 	}
+	defer response.Body.Close()
 
 	var responseBody getWeightResponse
 	err = json.NewDecoder(response.Body).Decode(&responseBody)
@@ -299,6 +302,7 @@ func (a *authorization) RefreshTokens() error {
 		slog.Error("request failed", "error", err)
 		return ErrRequestFailed
 	}
+	defer response.Body.Close()
 
 	if response.StatusCode > 299 {
 		slog.Error("got a non 200 response", "code", response.StatusCode)
@@ -314,6 +318,11 @@ func (a *authorization) RefreshTokens() error {
 	if err != nil {
 		slog.Error("failed to decode response payload", "error", err.Error())
 		return ErrDecodePayload
+	}
+
+	if responsePayload.Status != 0 {
+		slog.Error("payload status was not 0")
+		return ErrRequestFailed
 	}
 
 	a.accessToken = responsePayload.Body.AccessToken
