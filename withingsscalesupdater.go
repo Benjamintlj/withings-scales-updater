@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"log/slog"
 	"math"
@@ -274,7 +275,7 @@ func (a *authorization) RefreshTokens() error {
 	a.tokenMu.Lock()
 	defer a.tokenMu.Unlock()
 
-	if a.tokenExpiryDate.Add(time.Minute).After(time.Now().UTC()) {
+	if a.tokenExpiryDate.Add(-time.Minute).After(time.Now().UTC()) {
 		slog.Info("No need to refresh tokens", "expiryDate", a.tokenExpiryDate)
 		return nil
 	}
@@ -291,10 +292,20 @@ func (a *authorization) RefreshTokens() error {
 		slog.Error("failed to create request", "error", err.Error())
 		return ErrFailedToCreateRequest
 	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	response, err := a.client.Do(request)
 	if err != nil {
 		slog.Error("request failed", "error", err)
+		return ErrRequestFailed
+	}
+
+	if response.StatusCode > 299 {
+		slog.Error("got a non 200 response", "code", response.StatusCode)
+		buf, err := io.ReadAll(response.Body)
+		if err == nil {
+			slog.Error("obtained response body", "body", string(buf))
+		}
 		return ErrRequestFailed
 	}
 

@@ -169,7 +169,7 @@ func TestGetWeight(t *testing.T) {
 
 		defer server.Close()
 		au := &authorization{
-			tokenExpiryDate: time.Now().UTC(),
+			tokenExpiryDate: time.Now().UTC().Add(time.Hour),
 			accessToken:     "token",
 			refreshToken:    "askdf",
 			tokenMu:         sync.RWMutex{},
@@ -224,121 +224,146 @@ func TestGetWeight(t *testing.T) {
 }
 
 func TestRefreshTokens(t *testing.T) {
-	t.Run("Success", func(t *testing.T) {
-		wantAccessToken := "want access token"
-		wantRefreshToken := "want refresh token"
-		wantExpiry := 10800
+	type serverResponseTest struct {
+		code    int
+		payload responseTokenPayloadBody
+	}
 
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
+	type authTokensTest struct {
+		tokenExpiryDate time.Time
+		accessToken     string
+		refreshToken    string
+	}
 
-				err := json.NewEncoder(w).Encode(responseTokenPayload{
-					Body: responseTokenPayloadBody{
-						AccessToken:  wantAccessToken,
-						RefreshToken: wantRefreshToken,
-						ExpiresIn:    wantExpiry,
-					},
-				})
+	type expectTest struct {
+		err            error
+		refreshToken   string
+		accessToken    string
+		newTokenExpiry bool
+	}
 
-				if err != nil {
-					t.Fatalf("failed to encode mock response %q", err.Error())
-				}
-			}))
-		defer server.Close()
-		au := &authorization{
-			tokenExpiryDate: time.Now().UTC().Add(time.Minute * -2),
-			accessToken:     "token",
-			refreshToken:    "askdf",
-			tokenMu:         sync.RWMutex{},
-			client:          &http.Client{Timeout: 1 * time.Second},
-			requestTokenUrl: server.URL,
-		}
+	tests := []struct {
+		name           string
+		authTokens     authTokensTest
+		serverResponse serverResponseTest
+		expect         expectTest
+	}{
+		{
+			name: "Success",
+			authTokens: authTokensTest{
+				accessToken:     "already got access token",
+				refreshToken:    "already got access token",
+				tokenExpiryDate: time.Now().UTC().Add(-time.Hour),
+			},
+			serverResponse: serverResponseTest{
+				code: http.StatusOK,
+				payload: responseTokenPayloadBody{
+					AccessToken:  "server access token",
+					RefreshToken: "server refresh token",
+					ExpiresIn:    10800,
+				},
+			},
+			expect: expectTest{
+				err:            nil,
+				accessToken:    "server access token",
+				refreshToken:   "server refresh token",
+				newTokenExpiry: true,
+			},
+		},
+		{
+			name: "Don't update token if it has not expired",
+			authTokens: authTokensTest{
+				accessToken:     "already got access token",
+				refreshToken:    "already got access token",
+				tokenExpiryDate: time.Now().UTC().Add(time.Hour),
+			},
+			serverResponse: serverResponseTest{
+				code: http.StatusOK,
+				payload: responseTokenPayloadBody{
+					AccessToken:  "server access token",
+					RefreshToken: "server refresh token",
+					ExpiresIn:    10800,
+				},
+			},
+			expect: expectTest{
+				err:            nil,
+				accessToken:    "already got access token",
+				refreshToken:   "already got access token",
+				newTokenExpiry: false,
+			},
+		},
+		{
+			name: "Bad server response",
+			authTokens: authTokensTest{
+				accessToken:     "already got access token",
+				refreshToken:    "already got access token",
+				tokenExpiryDate: time.Now().UTC().Add(-time.Hour),
+			},
+			serverResponse: serverResponseTest{
+				code: http.StatusInternalServerError,
+				payload: responseTokenPayloadBody{
+					AccessToken:  "server access token",
+					RefreshToken: "server refresh token",
+					ExpiresIn:    10800,
+				},
+			},
+			expect: expectTest{
+				err:            ErrRequestFailed,
+				accessToken:    "already got access token",
+				refreshToken:   "already got access token",
+				newTokenExpiry: false,
+			},
+		},
+	}
 
-		err := au.RefreshTokens()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(
+				http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					w.WriteHeader(test.serverResponse.code)
 
-		if err != nil {
-			t.Errorf("Expected no error %q", err.Error())
-		}
-		if au.refreshToken != wantRefreshToken {
-			t.Errorf("Expected refresh token %q but got %q", wantRefreshToken, au.refreshToken)
-		}
-		if au.accessToken != wantAccessToken {
-			t.Errorf("Expected refresh token %q but got %q", wantAccessToken, au.accessToken)
-		}
-		if au.tokenExpiryDate.Before(time.Now().UTC()) {
-			t.Errorf("Expected expiry date to be in the future but was not")
-		}
-	})
+					err := json.NewEncoder(w).Encode(responseTokenPayload{
+						Body: responseTokenPayloadBody{
+							AccessToken:  test.serverResponse.payload.AccessToken,
+							RefreshToken: test.serverResponse.payload.RefreshToken,
+							ExpiresIn:    test.serverResponse.payload.ExpiresIn,
+						},
+					})
 
-	t.Run("Don't update token if it has not expired", func(t *testing.T) {
-		wantAccessToken := "want access token"
-		wantRefreshToken := "want refresh token"
-		wantExpiry := time.Now().UTC().Add(time.Minute * 5)
+					if err != nil {
+						t.Fatalf("failed to encode mock response %q", err.Error())
+					}
+				}))
+			defer server.Close()
+			au := &authorization{
+				tokenExpiryDate: test.authTokens.tokenExpiryDate,
+				accessToken:     test.authTokens.accessToken,
+				refreshToken:    test.expect.refreshToken,
+				tokenMu:         sync.RWMutex{},
+				client:          &http.Client{Timeout: 1 * time.Second},
+				requestTokenUrl: server.URL,
+			}
 
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusOK)
+			err := au.RefreshTokens()
 
-				err := json.NewEncoder(w).Encode(responseTokenPayload{
-					Body: responseTokenPayloadBody{
-						AccessToken:  "asdfasdf",
-						RefreshToken: "asddfsa",
-						ExpiresIn:    10800,
-					},
-				})
+			if test.expect.err == nil && err != nil {
+				t.Errorf("Expected no error %q", err.Error())
+			}
+			if test.expect.err != nil && !errors.Is(err, test.expect.err) {
+				t.Errorf("Expected error %q but got %q", test.expect.err.Error(), err.Error())
+			}
+			if au.accessToken != test.expect.accessToken {
+				t.Errorf("Expected refresh token %q but got %q", test.expect.accessToken, au.accessToken)
+			}
+			if au.refreshToken != test.expect.refreshToken {
+				t.Errorf("Expected refresh token %q but got %q", test.expect.refreshToken, au.refreshToken)
+			}
+			if au.tokenExpiryDate.Before(time.Now().UTC()) && test.expect.newTokenExpiry {
+				t.Errorf("Expected expiry date to be in the future but was not")
+			}
+		})
 
-				if err != nil {
-					t.Fatalf("failed to encode mock response %q", err.Error())
-				}
-			}))
-		defer server.Close()
-		au := &authorization{
-			tokenExpiryDate: wantExpiry,
-			accessToken:     wantAccessToken,
-			refreshToken:    wantRefreshToken,
-			tokenMu:         sync.RWMutex{},
-			client:          &http.Client{Timeout: 1 * time.Second},
-			requestTokenUrl: server.URL,
-		}
-
-		err := au.RefreshTokens()
-
-		if err != nil {
-			t.Errorf("Expected no error %q", err.Error())
-		}
-		if au.refreshToken != wantRefreshToken {
-			t.Errorf("Expected refresh token %q but got %q", wantRefreshToken, au.refreshToken)
-		}
-		if au.accessToken != wantAccessToken {
-			t.Errorf("Expected refresh token %q but got %q", wantAccessToken, au.accessToken)
-		}
-		if au.tokenExpiryDate.Before(time.Now().UTC()) {
-			t.Errorf("Expected expiry date to be in the future but was not")
-		}
-	})
-
-	t.Run("Bad server response", func(t *testing.T) {
-		server := httptest.NewServer(
-			http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.WriteHeader(http.StatusInternalServerError)
-			}))
-		defer server.Close()
-		au := &authorization{
-			tokenExpiryDate: time.Now().UTC().Add(time.Minute * -2),
-			accessToken:     "asdf",
-			refreshToken:    "asdfasdf",
-			tokenMu:         sync.RWMutex{},
-			client:          &http.Client{Timeout: 1 * time.Second},
-			requestTokenUrl: server.URL,
-		}
-
-		err := au.RefreshTokens()
-
-		if errors.Is(err, ErrRequestFailed) {
-			t.Errorf("Expected no error %q", err.Error())
-		}
-	})
+	}
 }
 
 func assertStatusCode(t testing.TB, want, got int) {
