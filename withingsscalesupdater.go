@@ -80,6 +80,7 @@ type authorization struct {
 }
 
 func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
+	slog.Info("Login request recieved")
 	authRedirectUri := fmt.Sprint(a.serviceUrl, "/get_token")
 	withlingsRedirectUrl := fmt.Sprintf(
 		"https://account.withings.com/oauth2_user/authorize2?response_type=code&client_id=%v&scope=%v&redirect_uri=%v&state=%v",
@@ -91,6 +92,7 @@ func (a *authorization) LoginHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add("Location", withlingsRedirectUrl)
 
 	w.WriteHeader(http.StatusFound)
+	slog.Info("Login request successful")
 }
 
 type responseTokenPayloadBody struct {
@@ -105,7 +107,7 @@ type responseTokenPayload struct {
 }
 
 func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
-	slog.Info("callback received")
+	slog.Info("Token handler request received")
 
 	code := r.URL.Query().Get("code")
 	if code == "" {
@@ -175,6 +177,7 @@ func (a *authorization) TokenHandler(w http.ResponseWriter, r *http.Request) {
 	a.refreshToken = responsePayload.Body.RefreshToken
 	a.tokenExpiryDate = time.Now().UTC().Add(time.Second * time.Duration(responsePayload.Body.ExpiresIn))
 	a.tokenMu.Unlock()
+	slog.Info("Token handler successful")
 }
 
 type getWeightResponse struct {
@@ -205,6 +208,8 @@ type weightResult struct {
 }
 
 func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
+	slog.Info("requested weight")
+
 	err := a.RefreshTokens()
 	if err != nil {
 		slog.Error("failed to refresh tokens", "error", err.Error())
@@ -270,8 +275,14 @@ func (a *authorization) GetWeight(w http.ResponseWriter, r *http.Request) {
 	}
 
 	slog.Info("got measurements", "length", len(resultBody.Measurements))
-	json.NewEncoder(w).Encode(resultBody)
+	err = json.NewEncoder(w).Encode(resultBody)
+	if err != nil {
+		slog.Warn("failed to encode response")
+		w.WriteHeader(http.StatusInternalServerError)
+	}
+
 	w.WriteHeader(http.StatusOK)
+	slog.Info("Weight request successful")
 }
 
 func (a *authorization) RefreshTokens() error {
